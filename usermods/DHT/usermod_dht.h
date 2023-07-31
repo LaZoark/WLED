@@ -1,7 +1,7 @@
 #pragma once
 
 #include "wled.h"
-
+#include <Arduino.h>
 #include <dht_nonblocking.h>
 
 // USERMOD_DHT_DHTTYPE:
@@ -62,6 +62,10 @@ class UsermodDHT : public Usermod {
     float humidity, temperature = 0;
     bool initializing = true;
     bool disabled = false;
+    String mqttTemperatureTopic = "";
+    String mqttHumidityTopic = "";
+    bool mqttInitialized = false;
+
     #ifdef USERMOD_DHT_STATS
     unsigned long nextResetStatsTime = 0;
     uint16_t updates = 0;
@@ -71,6 +75,47 @@ class UsermodDHT : public Usermod {
     unsigned long currentIteration = 0;
     unsigned long maxIteration = 0;
     #endif
+
+    void _createMqttSensor(const String &name, const String &topic, const String &deviceClass, const String &unitOfMeasurement)
+    {
+      String t = String("homeassistant/sensor/") + mqttClientID + "/" + name + "/config";
+
+      StaticJsonDocument<300> doc;
+
+      doc["name"] = name;
+      doc["state_topic"] = topic;
+      doc["unique_id"] = String(mqttClientID) + name;
+      if (unitOfMeasurement != "")
+        doc["unit_of_measurement"] = unitOfMeasurement;
+      if (deviceClass != "")
+        doc["device_class"] = deviceClass;
+      doc["expire_after"] = 1800;
+
+      JsonObject device = doc.createNestedObject("device"); // attach the sensor to the same device
+      device["identifiers"] = String("wled-sensor-") + mqttClientID;
+      device["manufacturer"] = "Aircoookie";
+      device["model"] = "WLED";
+      device["sw_version"] = VERSION;
+      device["name"] = mqttClientID;
+
+      String temp;
+      serializeJson(doc, temp);
+      Serial.println(t);
+      Serial.println(temp);
+
+      mqtt->publish(t.c_str(), 0, true, temp.c_str());
+    }
+
+    void _mqttInitialize()
+    {
+      mqttTemperatureTopic = String(mqttDeviceTopic) + "/temperature";
+      mqttHumidityTopic = String(mqttDeviceTopic) + "/humidity";
+
+      String t = String("homeassistant/sensor/") + mqttClientID + "/temperature/config";
+
+      _createMqttSensor("temperature", mqttTemperatureTopic, "temperature", "°C");
+      _createMqttSensor("humidity", mqttHumidityTopic, "humidity", "%");
+    }
 
   public:
     void setup() {
@@ -88,6 +133,16 @@ class UsermodDHT : public Usermod {
       if (millis() < nextReadTime) {
         return;
       }
+
+      if (mqtt != nullptr && mqtt->connected())
+      {
+        if (!mqttInitialized)
+        {
+          _mqttInitialize();
+          mqttInitialized = true;
+        }
+      }
+
 
       #ifdef USERMOD_DHT_STATS
       if (millis() >= nextResetStatsTime) {
@@ -112,6 +167,12 @@ class UsermodDHT : public Usermod {
 
         nextReadTime = millis() + USERMOD_DHT_MEASUREMENT_INTERVAL;
         lastReadTime = millis();
+        mqtt->publish(mqttTemperatureTopic.c_str(), 0, true, String(temperature, 1).c_str());
+        // mqtt->publish(mqttHumidityTopic.c_str(), 0, true, String(humidity).c_str());
+        // mqtt->publish(mqttHumidityTopic.c_str(), 0, true, String(int(humidity)).c_str());
+        mqtt->publish(mqttHumidityTopic.c_str(), 0, true, String(humidity, 0).c_str());
+
+
         initializing = false;
         
         #ifdef USERMOD_DHT_STATS
